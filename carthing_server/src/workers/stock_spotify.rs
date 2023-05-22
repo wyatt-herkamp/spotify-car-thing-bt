@@ -6,6 +6,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
+use log::{error, warn};
+use simple_log::debug;
 
 pub struct CarThingRpcReq {
     pub req_id: u64,
@@ -42,7 +44,7 @@ pub fn spawn_car_thing_workers(
     let tx_worker = {
         std::thread::spawn(move || {
             if let Err(e) = CarThingTxWorker::new(tx_sock, out_rx).run() {
-                println!("socket send error: {:?}", e);
+                error!("socket send error: {:?}", e);
             }
         })
     };
@@ -50,7 +52,7 @@ pub fn spawn_car_thing_workers(
     let rx_worker = {
         std::thread::spawn(move || {
             if let Err(e) = CarThingRxWorker::new(rx_sock, in_tx).run() {
-                println!("socket recv error: {:?}", e);
+                error!("socket recv error: {:?}", e);
             }
         })
     };
@@ -67,7 +69,7 @@ pub fn spawn_car_thing_workers(
             )
             .run()
             {
-                println!("socket recv error: {:?}", e);
+                error!("socket recv error: {:?}", e);
             }
         })
     };
@@ -97,15 +99,15 @@ pub struct CarThingServerHandles {
 impl CarThingServerHandles {
     pub fn wait_for_shutdown(self) -> Result<()> {
         if self.tx_worker.join().is_err() {
-            println!("tx_worker panicked!")
+            error!("tx_worker panicked!")
         }
 
         if self.rx_worker.join().is_err() {
-            println!("rx_worker panicked!")
+            error!("rx_worker panicked!")
         }
 
         if self.wamp_worker.join().is_err() {
-            println!("wamp_worker panicked!")
+            error!("wamp_worker panicked!")
         }
 
         Ok(())
@@ -126,11 +128,11 @@ impl CarThingRxWorker {
         loop {
             let mut msg_len = [0; 4];
             if let Err(e) = self.sock.read_exact(&mut msg_len) {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    println!("device disconnected");
-                    return Ok(());
+                return if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    error!("device disconnected");
+                    Ok(())
                 } else {
-                    return Err(e.into());
+                    Err(e.into())
                 }
             }
             let msg_len = u32::from_be_bytes(msg_len);
@@ -141,7 +143,7 @@ impl CarThingRxWorker {
             )?;
 
             {
-                println!("recv <-- {:>4}|{}", msg_len, msg);
+                debug!("recv <-- {:>4}|{}", msg_len, msg);
             }
 
             self.send.send((msg_len, msg))?;
@@ -255,7 +257,7 @@ impl CarThingWampWorker {
                     let sub_id = match self.subs.get(&topic) {
                         Some(sub) => sub,
                         None => {
-                            println!("warning: not subscribed to topic: {topic}");
+                            warn!(" not subscribed to topic: {topic}");
                             continue;
                         }
                     };
@@ -361,7 +363,7 @@ impl CarThingWampWorker {
                 };
 
                 {
-                    println!(
+                    debug!(
                         "[{:>8}] SUBSCRIBE {} ({})",
                         req_id,
                         topic,
@@ -406,16 +408,11 @@ impl CarThingWampWorker {
                         | "com.spotify.superbird.instrumentation.log"
                 ) {
                     println!(
-                        "[{:>8}] CALL {}|{}|{}",
+                        "[{:>8}] CALL {}|{}",
                         req_id,
                         proc,
                         args.iter()
                             .map(|arg| format!("{arg}"))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        kwargs
-                            .iter()
-                            .map(|(key, value)| format!("{key}={value}"))
                             .collect::<Vec<_>>()
                             .join(", ")
                     );

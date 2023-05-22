@@ -80,7 +80,7 @@ impl WinBtSockListener {
                 lpSockaddr: &mut self.sa as *mut _ as *mut SOCKADDR,
                 iSockaddrLength: size_of_val(&self.sa) as i32,
             },
-            iSocketType: SOCK_STREAM.into(),
+            iSocketType: SOCK_STREAM.0.into(),
             iProtocol: size_of_val(&self.sa) as i32,
             ..CSADDR_INFO::default()
         };

@@ -4,6 +4,7 @@ use crossbeam_channel::Sender;
 use std::fmt::Debug;
 use std::io::Read;
 use std::io::Write;
+use log::error;
 use tungstenite::WebSocket;
 
 pub trait TryCloneIo: Send + Sync + Read + Write + Sized + Debug + 'static {
@@ -36,13 +37,13 @@ pub fn spawn_json_websocket_workers(
 
     let ws_rx_worker = std::thread::spawn(move || {
         if let Err(e) = JsonWebsocketRxWorker::new(ws_rx, in_tx).run() {
-            println!("ws recv error: {:?}", e);
+            error!("ws recv error: {:?}", e);
         }
     });
 
     let ws_tx_worker = std::thread::spawn(move || {
         if let Err(e) = JsonWebsocketTxWorker::new(ws_tx, out_rx).run() {
-            println!("ws recv error: {:?}", e);
+            error!("ws recv error: {:?}", e);
         }
     });
 
@@ -64,11 +65,11 @@ pub struct JsonWebsocketServerHandles {
 impl JsonWebsocketServerHandles {
     pub fn wait_for_shutdown(self) -> anyhow::Result<()> {
         if self.ws_rx_worker.join().is_err() {
-            println!("ws_rx_worker panicked!")
+            error!("ws_rx_worker panicked!")
         }
 
         if self.ws_tx_worker.join().is_err() {
-            println!("ws_tx_worker panicked!")
+            error!("ws_tx_worker panicked!")
         }
 
         Ok(())

@@ -7,6 +7,7 @@ use anyhow::Context;
 use anyhow::Result;
 use std::convert::Infallible;
 use std::net::TcpListener;
+use log::{debug, error, info};
 use uuid::Uuid;
 
 const DESKTHING_PORT: u16 = 36308;
@@ -25,12 +26,12 @@ fn accept_car_thing(chans: DeskthingChans) -> anyhow::Result<Infallible> {
 
     loop {
         let bt_sock = {
-            println!(
+            info!(
                 "waiting for bt connection on RFCOMM port {}...",
                 bt_socket.rfcomm_port()
             );
             let bt_sock = bt_socket.accept().context("accepting bt connection")?;
-            println!(
+            debug!(
                 "Connection received from {:04x}{:08x} to port {}",
                 bt_sock.nap(),
                 bt_sock.sap(),
@@ -55,7 +56,7 @@ fn accept_car_thing(chans: DeskthingChans) -> anyhow::Result<Infallible> {
             .context("trying to update bt wiring")?;
 
         if car_thing_server.wait_for_shutdown().is_err() {
-            println!("car_thing_server did not shut down cleanly")
+            error!("car_thing_server did not shut down cleanly")
         }
     }
 }
@@ -66,9 +67,9 @@ fn accept_websocket(chans: DeskthingChans) -> anyhow::Result<Infallible> {
 
     loop {
         let ws_stream = {
-            println!("waiting for ws connection on 127.0.0.1:{DESKTHING_PORT}...");
+            info!("waiting for ws connection on 127.0.0.1:{DESKTHING_PORT}...");
             let (ws_stream, ws_addr) = ws_server.accept().context("accepting ws connection")?;
-            println!("accepted ws connection from {}", ws_addr);
+            info!("accepted ws connection from {}", ws_addr);
             ws_stream
         };
 
@@ -78,7 +79,7 @@ fn accept_websocket(chans: DeskthingChans) -> anyhow::Result<Infallible> {
         chans.update_ws(ws_tx, ws_rx)?;
 
         if ws_server.wait_for_shutdown().is_err() {
-            println!("car_thing_server did not shut down cleanly")
+            error!("car_thing_server did not shut down cleanly")
         }
     }
 }
@@ -90,7 +91,7 @@ pub fn run_deskthing() -> Result<()> {
         let chans = chans.clone();
         std::thread::spawn(move || {
             if let Err(e) = accept_car_thing(chans) {
-                println!("failure accepting bt connection: {:?}", e)
+                error!("failure accepting bt connection: {:?}", e)
             }
         })
     };
@@ -99,13 +100,13 @@ pub fn run_deskthing() -> Result<()> {
         let chans = chans;
         std::thread::spawn(move || {
             if let Err(e) = accept_websocket(chans) {
-                println!("failure accepting ws connection: {:?}", e)
+                error!("failure accepting ws connection: {:?}", e)
             }
         })
     };
 
     if deskthing_server.wait_for_shutdown().is_err() {
-        println!("deskthing_server did not shut down cleanly")
+        error!("deskthing_server did not shut down cleanly")
     }
 
     Ok(())
