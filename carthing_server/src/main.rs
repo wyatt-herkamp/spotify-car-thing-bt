@@ -1,17 +1,21 @@
-use anyhow::Result;
-
+use crate::error::AppError;
+use crate::sys::{CurrentPlatform, Platform};
 mod apps;
+mod error;
 mod sys;
 mod workers;
 
-fn main() -> Result<()> {
-    simple_log::quick!();
-    sys::platform_init()?;
 
-    if let Err(e) = apps::deskthing::run_deskthing() {
+fn main() -> Result<(), AppError> {
+    simple_log::quick!();
+
+    CurrentPlatform::init()?;
+
+
+
+    if let Err(e) = apps::deskthing::run_deskthing::<CurrentPlatform>() {
         println!("error: {:?}", e);
     }
 
-    sys::platform_teardown()?;
-    Ok(())
+    CurrentPlatform::teardown()
 }

@@ -1,11 +1,13 @@
 use super::stock_spotify::CarThingRpcReq;
 use super::stock_spotify::CarThingRpcRes;
-use anyhow::Context;
-use crossbeam_channel::select;
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
+
+use log::error;
 use serde_json::json;
 use std::convert::Infallible;
+use anyhow::Context;
+
+use crossbeam_channel::{Receiver, select, Sender};
+use crate::error::AppError;
 
 pub struct DeskthingWorkerHandles {
     bridge_rx_worker: std::thread::JoinHandle<()>,
@@ -15,11 +17,11 @@ pub struct DeskthingWorkerHandles {
 impl DeskthingWorkerHandles {
     pub fn wait_for_shutdown(self) -> anyhow::Result<()> {
         if self.bridge_rx_worker.join().is_err() {
-            println!("bridge_rx_worker panicked!")
+            error!("bridge_rx_worker panicked!")
         }
 
         if self.bridge_tx_worker.join().is_err() {
-            println!("bridge_tx_worker panicked!")
+            error!("bridge_tx_worker panicked!")
         }
 
         Ok(())
@@ -39,7 +41,7 @@ impl DeskthingChans {
         &self,
         ws_tx: Sender<serde_json::Value>,
         ws_rx: Receiver<serde_json::Value>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AppError> {
         self.rx_obtain_ws.send(DeskthingRxWs { ws_rx })?;
         self.tx_obtain_ws.send(DeskthingTxWs { ws_tx })?;
         Ok(())
@@ -51,7 +53,7 @@ impl DeskthingChans {
         state_req_rx: Receiver<String>,
         rpc_req_rx: Receiver<CarThingRpcReq>,
         rpc_res_tx: Sender<CarThingRpcRes>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AppError> {
         self.rx_obtain_bt.send(DeskthingRxBt {
             rpc_res_tx,
             topic_tx,
@@ -64,8 +66,8 @@ impl DeskthingChans {
         Ok(())
     }
 }
-
-pub fn spawn_deskthing_bridge_workers() -> anyhow::Result<(DeskthingWorkerHandles, DeskthingChans)>
+pub type BridgeWorkers = (DeskthingWorkerHandles, DeskthingChans);
+pub fn spawn_deskthing_bridge_workers() -> Result<BridgeWorkers, AppError>
 {
     let (rx_obtain_ws_tx, rx_obtain_ws_rx) = crossbeam_channel::unbounded();
     let (rx_obtain_bt_tx, rx_obtain_bt_rx) = crossbeam_channel::unbounded();
@@ -183,13 +185,11 @@ impl DeskthingRxWorker {
                 }
             } else if msg.get("topic").is_some() {
                 // handle publish
-                let topic = msg["topic"]
-                    .as_str()
-                    .context(format!("invalid topic kind: {}", msg["topic"]))?;
+                let topic = &msg["topic"];
 
                 let pub_id = next_pub_id;
                 next_pub_id += 1;
-                let res = topic_tx.send((topic.to_owned(), msg["state"].take(), pub_id));
+                let res = topic_tx.send((topic.to_owned().to_string(), msg["state"].take(), pub_id));
 
                 if res.is_err() {
                     return Ok(WhatFailed::Bt);

@@ -1,33 +1,25 @@
-use anyhow::Context;
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
+
+use log::error;
 use std::fmt::Debug;
+use std::io;
 use std::io::Read;
 use std::io::Write;
-use log::error;
+use std::net::TcpStream;
+use anyhow::Context;
+use crossbeam_channel::{Receiver, Sender};
 use tungstenite::WebSocket;
+use crate::error::AppError;
 
-pub trait TryCloneIo: Send + Sync + Read + Write + Sized + Debug + 'static {
-    fn try_clone(&self) -> anyhow::Result<Self>;
-}
-
-impl TryCloneIo for std::net::TcpStream {
-    fn try_clone(&self) -> anyhow::Result<Self> {
-        Ok(self.try_clone()?)
-    }
-}
-
+pub type JsonWSWorkers= (    JsonWebsocketServerHandles,
+                              Sender<serde_json::Value>,
+                              Receiver<serde_json::Value>);
 pub fn spawn_json_websocket_workers(
-    stream: impl TryCloneIo,
-) -> anyhow::Result<(
-    JsonWebsocketServerHandles,
-    Sender<serde_json::Value>,
-    Receiver<serde_json::Value>,
-)> {
+    stream: TcpStream,
+) -> Result<JsonWSWorkers, AppError> {
     let rx_stream = io_guard::PanicOnWrite(stream.try_clone()?);
     let tx_stream = io_guard::PanicOnRead(stream.try_clone()?);
 
-    let _ws = tungstenite::accept(stream).context("creating websocket")?;
+    let _ws = tungstenite::accept(stream.try_clone()?)?;
 
     let ws_rx = WebSocket::from_raw_socket(rx_stream, tungstenite::protocol::Role::Server, None);
     let ws_tx = WebSocket::from_raw_socket(tx_stream, tungstenite::protocol::Role::Server, None);

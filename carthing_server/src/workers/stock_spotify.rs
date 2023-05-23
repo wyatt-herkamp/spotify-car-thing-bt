@@ -1,14 +1,13 @@
-use anyhow::Context;
-use anyhow::Result;
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
+
+use log::{error, warn};
 use serde_json::json;
+use simple_log::debug;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
-use log::{error, warn};
-use simple_log::debug;
-
+use crossbeam_channel::{Receiver, Sender};
+use crate::error::AppError;
+use anyhow::{Context, Result};
 pub struct CarThingRpcReq {
     pub req_id: u64,
     pub proc: String,
@@ -33,7 +32,7 @@ pub struct CarThingServerChans {
 pub fn spawn_car_thing_workers(
     rx_sock: Box<dyn Read + Send>,
     tx_sock: Box<dyn Write + Send>,
-) -> Result<(CarThingServerHandles, CarThingServerChans)> {
+) -> Result<(CarThingServerHandles, CarThingServerChans), AppError> {
     let (in_tx, in_rx) = crossbeam_channel::unbounded();
     let (out_tx, out_rx) = crossbeam_channel::unbounded();
     let (topic_tx, topic_rx) = crossbeam_channel::unbounded();
@@ -97,7 +96,7 @@ pub struct CarThingServerHandles {
 }
 
 impl CarThingServerHandles {
-    pub fn wait_for_shutdown(self) -> Result<()> {
+    pub fn wait_for_shutdown(self)  {
         if self.tx_worker.join().is_err() {
             error!("tx_worker panicked!")
         }
@@ -109,8 +108,6 @@ impl CarThingServerHandles {
         if self.wamp_worker.join().is_err() {
             error!("wamp_worker panicked!")
         }
-
-        Ok(())
     }
 }
 
@@ -133,7 +130,7 @@ impl CarThingRxWorker {
                     Ok(())
                 } else {
                     Err(e.into())
-                }
+                };
             }
             let msg_len = u32::from_be_bytes(msg_len);
 

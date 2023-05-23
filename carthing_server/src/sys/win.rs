@@ -1,5 +1,10 @@
 // TODO: this code should probably get swapped out with something like socket2..
 
+use std::fmt::Write;
+use crate::error;
+use crate::error::windows::WindowsError;
+use crate::error::AppError;
+use crate::sys::{BtSocketListener, BtSocketStream, Platform};
 use std::mem::size_of;
 use std::mem::size_of_val;
 use uuid::Uuid;
@@ -9,33 +14,28 @@ use windows::Win32::Devices::Bluetooth::*;
 use windows::Win32::Networking::WinSock::*;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 
-pub fn platform_init() -> anyhow::Result<()> {
-    let mut wsa_data = WSADATA::default();
-    let res = unsafe { WSAStartup(0x0202, &mut wsa_data) };
-    if res != 0 {
-        anyhow::bail!("WSAStartup() failed: {}", res);
+pub struct WindowsPlatform;
+
+impl Platform for WindowsPlatform {
+    type BtSocketListener = WinBtSockListener;
+
+    fn init() -> Result<(), AppError> {
+        let mut wsa_data = WSADATA::default();
+        let result = unsafe { WSAStartup(0x0202, &mut wsa_data) };
+        if result != 0 {
+            return Err(AppError::IOError(std::io::Error::from_raw_os_error(result)));
+        }
+        Ok(())
     }
-    Ok(())
-}
 
-pub fn platform_teardown() -> anyhow::Result<()> {
-    let res = unsafe { WSACleanup() };
-    if res != 0 {
-        anyhow::bail!("WSACleanup() failed: {:?}", wsa_get_last_error());
+    fn teardown() -> Result<(), AppError> {
+        WindowsError::wsa_error_if_zero(unsafe { WSACleanup() }).map_err(|e| e.into())
     }
-    Ok(())
-}
 
-pub struct WinBtSockListener {
-    s: SOCKET,
-    sa: SOCKADDR_BTH,
-}
-
-impl WinBtSockListener {
-    pub fn bind() -> anyhow::Result<WinBtSockListener> {
+    fn bind_bt_socket_listener() -> Result<Self::BtSocketListener, AppError> {
         let s = unsafe { socket(AF_BTH.into(), SOCK_STREAM.into(), BTHPROTO_RFCOMM as i32) };
         if s == INVALID_SOCKET {
-            anyhow::bail!("failed to create socket");
+            return Err(WindowsError::InvalidSocket.into());
         }
 
         let mut sa_size = size_of::<SOCKADDR_BTH>() as i32;
@@ -46,34 +46,37 @@ impl WinBtSockListener {
             port: !0,
         };
 
-        let res = unsafe { bind(s, &sa as *const _ as *const SOCKADDR, sa_size) };
-        if res != 0 {
+        let res = WindowsError::wsa_error_if_zero(unsafe { bind(s, &sa as *const _ as *const SOCKADDR, sa_size)});
+        if let Err(e) = res {
             close_socket(s)?;
-            anyhow::bail!("failed to bind socket: {:?}", wsa_get_last_error());
+            return Err(e.into());
         }
 
-        let res = unsafe { listen(s, 2) };
-        if res != 0 {
+        let res = WindowsError::wsa_error_if_zero(unsafe { listen(s, 2) });
+        if let Err(e) = res {
             close_socket(s)?;
-            anyhow::bail!("failed to listen socket: {:?}", wsa_get_last_error());
+            return Err(e.into());
         }
 
-        let res = unsafe { getsockname(s, &mut sa as *mut _ as *mut SOCKADDR, &mut sa_size) };
-        if res != 0 {
+        let res = WindowsError::wsa_error_if_zero(unsafe { getsockname(s, &mut sa as *mut _ as *mut SOCKADDR, &mut sa_size) });
+        if let Err(e) = res {
             close_socket(s)?;
-            anyhow::bail!("failed to getsockname socket: {:?}", wsa_get_last_error());
+            return Err(e.into());
         }
 
         Ok(WinBtSockListener { s, sa })
     }
+}
+pub struct WinBtSockListener {
+    s: SOCKET,
+    sa: SOCKADDR_BTH,
+}
+impl BtSocketListener for WinBtSockListener {
+    type BtSocketStream = WinBtSockStream;
 
-    pub fn rfcomm_port(&self) -> u32 {
-        self.sa.port
-    }
-
-    pub fn register_service(&mut self, name: &str, service_id: Uuid) -> anyhow::Result<()> {
+    fn register_service(&mut self, name: &'static str, uuid: Uuid) -> Result<(), AppError> {
         let mut name = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-        let mut class_id = GUID::from_u128(service_id.as_u128());
+        let mut class_id = GUID::from_u128(uuid.as_u128());
 
         let mut sockinfo = CSADDR_INFO {
             LocalAddr: SOCKET_ADDRESS {
@@ -100,25 +103,21 @@ impl WinBtSockListener {
         //
         // We can't do it ourselves since we don't get a handle to our sdp
         // registration
-        let ret = unsafe { WSASetServiceW(&qs, RNRSERVICE_REGISTER, 0) };
-        if ret != 0 {
-            anyhow::bail!("WSASetService failed: {:?}", wsa_get_last_error())
-        }
-
-        Ok(())
+        WindowsError::wsa_error_if_zero(unsafe { WSASetServiceW(&qs, RNRSERVICE_REGISTER, 0) })
+            .map_err(|e| e.into())
     }
 
-    pub fn accept(&mut self) -> anyhow::Result<WinBtSockStream> {
+    fn accept(&mut self) -> Result<Self::BtSocketStream, AppError> {
         let mut sa = SOCKADDR_BTH::default();
         let sa_ptr = &mut sa as *mut _ as *mut SOCKADDR;
         let sa_len_ptr = &mut (size_of::<SOCKADDR_BTH>() as i32) as *mut i32;
 
         let s = unsafe { accept(self.s, Some(sa_ptr), Some(sa_len_ptr)) };
-        if s == INVALID_SOCKET {
-            anyhow::bail!("failed to accept socket: {:?}", wsa_get_last_error())
-        }
+        WinBtSockStream::new(s, sa).map_err(|e| e.into())
+    }
 
-        Ok(WinBtSockStream { s, sa })
+    fn rfcomm_port(&self) -> u32 {
+        self.sa.port
     }
 }
 
@@ -132,26 +131,12 @@ pub struct WinBtSockStream {
     s: SOCKET,
     sa: SOCKADDR_BTH,
 }
-
-impl WinBtSockStream {
-    pub fn nap(&self) -> u16 {
-        (self.sa.btAddr >> 32) as u16
-    }
-
-    pub fn sap(&self) -> u32 {
-        self.sa.btAddr as u32
-    }
-
-    pub fn port(&self) -> u32 {
-        self.sa.port
-    }
-
-    pub fn try_clone(&self) -> anyhow::Result<Self> {
+impl BtSocketStream for WinBtSockStream{
+    fn try_clone(&self) -> Result<Self, AppError> {
         let mut info = WSAPROTOCOL_INFOW::default();
-        let res = unsafe { WSADuplicateSocketW(self.s, GetCurrentProcessId(), &mut info) };
-        if res != 0 {
-            anyhow::bail!("failed to duplicate socket: {:?}", wsa_get_last_error())
-        }
+        WindowsError::wsa_error_if_zero(unsafe {
+            WSADuplicateSocketW(self.s, GetCurrentProcessId(), &mut info)
+        })?;
         let s = unsafe {
             WSASocketW(
                 info.iAddressFamily,
@@ -163,18 +148,26 @@ impl WinBtSockStream {
             )
         };
 
-        if s == INVALID_SOCKET {
-            anyhow::bail!("failed to create socket");
-        }
+        WinBtSockStream::new(s, self.sa).map_err(|e| e.into())
+    }
 
-        Ok(WinBtSockStream { s, sa: self.sa })
+    fn port(&self) -> u32 {
+        self.sa.port
+
+    }
+}
+impl WinBtSockStream {
+    pub fn new(s: SOCKET, sa: SOCKADDR_BTH) -> Result<Self, WindowsError> {
+        if s == INVALID_SOCKET {
+            return Err(WindowsError::InvalidSocket);
+        }
+        return Ok(WinBtSockStream { s, sa });
     }
 }
 
-impl std::io::Read for WinBtSockStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let res = unsafe { recv(self.s, buf, SEND_RECV_FLAGS::default()) };
-        match res {
+macro_rules! impl_read_write {
+    ($res:ident) => {
+        match $res {
             SOCKET_ERROR => {
                 let error = wsa_get_last_error();
 
@@ -184,26 +177,21 @@ impl std::io::Read for WinBtSockStream {
                     Err(std::io::Error::from_raw_os_error(error.0))
                 }
             }
-            _ => Ok(res as usize),
+            _ => Ok($res as usize),
         }
+    };
+}
+impl std::io::Read for WinBtSockStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let res = unsafe { recv(self.s, buf, SEND_RECV_FLAGS::default()) };
+        impl_read_write!(res)
     }
 }
 
 impl std::io::Write for WinBtSockStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let res = unsafe { send(self.s, buf, SEND_RECV_FLAGS::default()) };
-        match res {
-            SOCKET_ERROR => {
-                let error = wsa_get_last_error();
-
-                if error == WSAESHUTDOWN {
-                    Ok(0)
-                } else {
-                    Err(std::io::Error::from_raw_os_error(error.0))
-                }
-            }
-            _ => Ok(res as usize),
-        }
+        impl_read_write!(res)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -211,12 +199,8 @@ impl std::io::Write for WinBtSockStream {
     }
 }
 
-fn close_socket(socket: SOCKET) -> anyhow::Result<()> {
-    let res = unsafe { closesocket(socket) };
-    if res != 0 {
-        anyhow::bail!("failed to close socket: {:?}", wsa_get_last_error())
-    }
-    Ok(())
+fn close_socket(socket: SOCKET) -> error::Result<()> {
+   WindowsError::wsa_error_if_zero(unsafe { closesocket(socket) }).map_err(|e| e.into())
 }
 
 fn wsa_get_last_error() -> WSA_ERROR {
